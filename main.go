@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/leviplj/imagepullsecret-patcher/podutils"
 	log "github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -23,6 +24,7 @@ var (
 	configManagedOnly          bool          = false
 	configRunOnce              bool          = false
 	configAllServiceAccount    bool          = false
+	configAllPod               bool          = false
 	configDockerconfigjson     string        = ""
 	configDockerConfigJSONPath string        = ""
 	configSecretName           string        = "image-pull-secret" // default to image-pull-secret
@@ -48,6 +50,7 @@ func main() {
 	flag.BoolVar(&configManagedOnly, "managedonly", LookUpEnvOrBool("CONFIG_MANAGEDONLY", configManagedOnly), "only modify secrets which are annotated as managed by imagepullsecret")
 	flag.BoolVar(&configRunOnce, "runonce", LookUpEnvOrBool("CONFIG_RUNONCE", configRunOnce), "run a single update and exit instead of looping")
 	flag.BoolVar(&configAllServiceAccount, "allserviceaccount", LookUpEnvOrBool("CONFIG_ALLSERVICEACCOUNT", configAllServiceAccount), "if false, patch just default service account; if true, list and patch all service accounts")
+	flag.BoolVar(&configAllPod, "allPod", LookUpEnvOrBool("CONFIG_ALLPOD", configAllPod), "if true, list and patch all pods")
 	flag.StringVar(&configDockerconfigjson, "dockerconfigjson", LookupEnvOrString("CONFIG_DOCKERCONFIGJSON", configDockerconfigjson), "json credential for authenicating container registry, exclusive with `dockerconfigjsonpath`")
 	flag.StringVar(&configDockerConfigJSONPath, "dockerconfigjsonpath", LookupEnvOrString("CONFIG_DOCKERCONFIGJSONPATH", configDockerConfigJSONPath), "path to json file containing credentials for the registry to be distributed, exclusive with `dockerconfigjson`")
 	flag.StringVar(&configSecretName, "secretname", LookupEnvOrString("CONFIG_SECRETNAME", configSecretName), "set name of managed secrets")
@@ -123,6 +126,11 @@ func loop(k8s *k8sClient) {
 		}
 		// get default service account, and patch image pull secret if not exist
 		err = processServiceAccount(k8s, namespace)
+		if err != nil {
+			log.Error(err)
+		}
+
+		err = processPods(k8s, namespace)
 		if err != nil {
 			log.Error(err)
 		}
@@ -214,4 +222,33 @@ func stringNotInList(a string, list string) bool {
 		}
 	}
 	return true
+}
+
+func processPods(k8s *k8sClient, namespace string) error {
+	pods, err := k8s.clientset.CoreV1().Pods(namespace).List(metav1.ListOptions{})
+
+	if err != nil {
+		return fmt.Errorf("[%s] Failed to list pods: %v", namespace, err)
+	}
+
+	for _, pod := range pods.Items {
+		if !configAllPod {
+			log.Debugf("[%s] Skip pod [%s]", namespace, pod.Name)
+			continue
+		}
+		if podutils.IncludeImagePullSecret(&pod, configSecretName) {
+			log.Debugf("[%s] ImagePullSecrets found", namespace)
+			continue
+		}
+		patch, err := podutils.GetPatchString(&pod, configSecretName)
+		if err != nil {
+			return fmt.Errorf("[%s] Failed to get patch string: %v", namespace, err)
+		}
+		_, err = k8s.clientset.CoreV1().Pods(namespace).Patch(pod.Name, types.StrategicMergePatchType, patch)
+		if err != nil {
+			return fmt.Errorf("[%s] Failed to patch imagePullSecrets to pod [%s]: %v", namespace, pod.Name, err)
+		}
+		log.Infof("[%s] Patched imagePullSecrets to pod [%s]", namespace, pod.Name)
+	}
+	return nil
 }

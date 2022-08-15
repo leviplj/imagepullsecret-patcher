@@ -1,5 +1,4 @@
-module github.com/titansoft-pte-ltd/imagepullsecret-patcher
-
+module github.com/leviplj/imagepullsecret-patcher
 go 1.13
 
 require (
