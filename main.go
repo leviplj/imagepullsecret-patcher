@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leviplj/imagepullsecret-patcher/podutils"
 	log "github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -129,11 +128,6 @@ func loop(k8s *k8sClient) {
 		if err != nil {
 			log.Error(err)
 		}
-
-		err = processPods(k8s, namespace)
-		if err != nil {
-			log.Error(err)
-		}
 	}
 }
 
@@ -210,6 +204,13 @@ func processServiceAccount(k8s *k8sClient, namespace string) error {
 		if err != nil {
 			return fmt.Errorf("[%s] Failed to patch imagePullSecrets to service account [%s]: %v", namespace, sa.Name, err)
 		}
+
+		// delete pods for service account
+		// err = deletePods(k8s, namespace, sa.Name)
+		// if err != nil {
+		// 	return fmt.Errorf("[%s] Failed to delete pods of service account [%s]: %v", namespace, sa.Name, err)
+		// }
+
 		log.Infof("[%s] Patched imagePullSecrets to service account [%s]", namespace, sa.Name)
 	}
 	return nil
@@ -224,7 +225,7 @@ func stringNotInList(a string, list string) bool {
 	return true
 }
 
-func processPods(k8s *k8sClient, namespace string) error {
+func deletePods(k8s *k8sClient, namespace string, serviceAccountName string) error {
 	pods, err := k8s.clientset.CoreV1().Pods(namespace).List(metav1.ListOptions{})
 
 	if err != nil {
@@ -236,19 +237,17 @@ func processPods(k8s *k8sClient, namespace string) error {
 			log.Debugf("[%s] Skip pod [%s]", namespace, pod.Name)
 			continue
 		}
-		if podutils.IncludeImagePullSecret(&pod, configSecretName) {
-			log.Debugf("[%s] ImagePullSecrets found", namespace)
+
+		if pod.Spec.ServiceAccountName != serviceAccountName {
+			log.Debugf("[%s] Skip pod [%s]. Diff. SA", namespace, pod.Name)
 			continue
 		}
-		patch, err := podutils.GetPatchString(&pod, configSecretName)
+
+		err := k8s.clientset.CoreV1().Pods(namespace).Delete(pod.Name, &metav1.DeleteOptions{})
 		if err != nil {
-			return fmt.Errorf("[%s] Failed to get patch string: %v", namespace, err)
+			log.Fatal(err)
 		}
-		_, err = k8s.clientset.CoreV1().Pods(namespace).Patch(pod.Name, types.StrategicMergePatchType, patch)
-		if err != nil {
-			return fmt.Errorf("[%s] Failed to patch imagePullSecrets to pod [%s]: %v", namespace, pod.Name, err)
-		}
-		log.Infof("[%s] Patched imagePullSecrets to pod [%s]", namespace, pod.Name)
+		log.Infof("[%s] Deleted pod [%s] of servicew account [%s]", namespace, pod.Name, serviceAccountName)
 	}
 	return nil
 }
